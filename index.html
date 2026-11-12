@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spotify Vibe & Larp Checker</title>
+    <!-- فونت Plus Jakarta Sans که به شدت مدرن و نزدیک به دیزاین سیستم اسپاتیفایه -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+    <!-- نورهای پس‌زمینه برای دادن عمق به صفحه -->
+    <div class="ambient-glow glow-1"></div>
+    <div class="ambient-glow glow-2"></div>
+
+    <main class="app-container">
+        
+        <!-- هدر کوچک بالای کارت -->
+        <header class="card-header">
+            <div class="spotify-dot"></div>
+            <span>SPOTIFY ANALYZER</span>
+        </header>
+
+        <!-- بخش ۱: صفحه شروع (فعال به صورت پیش‌فرض) -->
+        <section class="view active" id="startView">
+            <div class="hero-content">
+                <h1>Decode Your Daily Vibe.</h1>
+                <p>Connect your Spotify to analyze your current mood and see how hard you're larping with your underground music taste today.</p>
+                <button class="btn-primary" id="checkBtn">
+                    <span>Check My Mood</span>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M5 12h14M12 5l7 7-7 7"/>
+                    </svg>
+                </button>
+            </div>
+        </section>
+
+        <!-- بخش ۲: صفحه لودینگ (مخفی) -->
+        <section class="view" id="loadingView">
+            <div class="loader-wrapper">
+                <div class="equalizer">
+                    <span class="bar"></span>
+                    <span class="bar"></span>
+                    <span class="bar"></span>
+                    <span class="bar"></span>
+                    <span class="bar"></span>
+                </div>
+                <div class="loading-messages">
+                    <p class="msg active" id="loadingText">We are gathering your data...</p>
+                    <span class="sub-msg">Analyzing audio features & artist popularity</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- بخش ۳: صفحه نتایج (مخفی - برای دیدن ظاهرش کلاس active رو بهش بده) -->
+        <section class="view" id="resultsView">
+            <!-- لیست ۵ آهنگ اخیر -->
+            <div class="recent-tracks-box">
+                <span class="stat-label">LAST 5 TRACKS PLAYED</span>
+                <div class="tracks-list" id="recentTracksList">
+                    <!-- آهنگ‌ها با جاوا اسکریپت اینجا ساخته میشن -->
+                </div>
+            </div>
+            <div class="results-header">
+                <span class="badge">TODAY'S REPORT</span>
+                <h2 id="moodTitle">Melancholic & Deep</h2>
+                <p id="moodDesc">Based on your recent rotation, you're leaning heavily into slow tempos and minor keys today.</p>
+            </div>
+
+            <!-- کارت درصد خاص بودن / لارپ کردن -->
+            <div class="stat-box">
+                <div class="stat-top">
+                    <span class="stat-label">NICHE / LARP SCORE</span>
+                    <span class="stat-number" id="nicheScore">84%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="nicheBar" style="width: 84%;"></div>
+                </div>
+                <p class="stat-verdict" id="larpVerdict">
+                    Certified Gatekeeper. 84% of your recent tracks are way off the mainstream radar.
+                </p>
+            </div>
+
+            <!-- تگ‌های مود -->
+            <div class="vibe-tags" id="vibeTags">
+                <span class="tag">#LowEnergy</span>
+                <span class="tag">#Underground</span>
+                <span class="tag">#LateNightVibes</span>
+            </div>
+
+            <button class="btn-secondary" id="resetBtn">Scan Again</button>
+        </section>
+
+    </main>
+
+    <!-- فایل‌های جاوا اسکریپت -->
+    <script src="js/spotify.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
