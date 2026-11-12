@@ -1,14 +1,9 @@
-// ۱. تنظیمات پایه اتصال به اسپاتیفای
-const CLIENT_ID = '82b33836340a416f9794ca03b9bbda03'; 
-
-// این خط به صورت هوشمند آدرس دقیق صفحه فعلی (چه با index.html چه بدون اون) رو می‌گیره تا ارور نگیریم
+// ۱. تنظیمات پایه اسپاتیفای
+const CLIENT_ID = '82b33836340a416f9794ca03b9bbda03'; // کلاینت آیدی خودت
 const REDIRECT_URI = window.location.origin + window.location.pathname;
-
-// دسترسی‌هایی که از کاربر می‌خوایم: دیدن آهنگ‌های اخیر و دیدن تاپ آرتیست‌ها
 const SCOPES = 'user-read-recently-played user-top-read';
 
-
-// ۲. ساخت یک رشته تصادفی برای امنیت لاگین
+// ۲. توابع رمزنگاری PKCE
 function generateRandomString(length) {
     let text = '';
     const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -18,7 +13,6 @@ function generateRandomString(length) {
     return text;
 }
 
-// ۳. رمزنگاری (Hash) رشته بالا با الگوریتم SHA-256
 async function generateCodeChallenge(codeVerifier) {
     const data = new TextEncoder().encode(codeVerifier);
     const digest = await window.crypto.subtle.digest('SHA-256', data);
@@ -28,12 +22,9 @@ async function generateCodeChallenge(codeVerifier) {
         .replace(/=+$/, '');
 }
 
-// ۴. هدایت کاربر به صفحه لاگین اسپاتیفای
 async function redirectToSpotifyLogin() {
     const codeVerifier = generateRandomString(128);
     const codeChallenge = await generateCodeChallenge(codeVerifier);
-
-    // ذخیره رشته اصلی توی مرورگر تا وقتی کاربر از صفحه اسپاتیفای برگشت، داشته باشیمش
     localStorage.setItem('code_verifier', codeVerifier);
 
     const params = new URLSearchParams({
@@ -45,14 +36,11 @@ async function redirectToSpotifyLogin() {
         code_challenge: codeChallenge
     });
 
-    // فرستادن کاربر به آدرس لاگین اسپاتیفای
     window.location.href = `https://accounts.spotify.com/authorize?${params.toString()}`;
 }
 
-// ۵. تبدیل کد برگشتی از اسپاتیفای به Access Token نهایی
 async function getAccessToken(code) {
     const codeVerifier = localStorage.getItem('code_verifier');
-
     const body = new URLSearchParams({
         grant_type: 'authorization_code',
         code: code,
@@ -69,232 +57,285 @@ async function getAccessToken(code) {
 
     const data = await response.json();
     if (data.access_token) {
-        // ذخیره توکن توی مرورگر که هر دفعه نخواد دوباره لاگین کنه
         localStorage.setItem('spotify_token', data.access_token);
         return data.access_token;
     }
-    throw new Error('خطا در دریافت توکن از اسپاتیفای');
+    throw new Error('Failed to get access token');
 }
 
-// ۶. دریافت همزمان آهنگ‌های اخیر + تاپ آرتیست‌ها و تاپ ترک‌ها (بدون خطای NaN)
+// ۳. دریافت دیتا از اسپاتیفای
 async function fetchSpotifyData(token) {
     const headers = { 'Authorization': `Bearer ${token}` };
 
-    // ارسال ۳ درخواست به صورت موازی برای سرعت بالا و دقت ۱۰۰٪
     const [recentRes, topArtistsRes, topTracksRes] = await Promise.all([
         fetch('https://api.spotify.com/v1/me/player/recently-played?limit=30', { headers }),
         fetch('https://api.spotify.com/v1/me/top/artists?time_range=short_term&limit=20', { headers }),
         fetch('https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=20', { headers })
     ]);
 
-    // اگر توکن منقضی شده بود، پاکش کن و دوباره لاگین کن
     if (recentRes.status === 401 || topArtistsRes.status === 401) {
         localStorage.removeItem('spotify_token');
         redirectToSpotifyLogin();
         return null;
     }
 
-    const recentData = await recentRes.json();
-    const topArtistsData = await topArtistsRes.json();
-    const topTracksData = await topTracksRes.json();
+    const recentData = await recentRes.json().catch(() => ({}));
+    const topArtistsData = await topArtistsRes.json().catch(() => ({}));
+    const topTracksData = await topTracksRes.json().catch(() => ({}));
 
     const recentTracks = (recentData.items || []).map(item => item.track).filter(Boolean);
     const topTracks = topTracksData.items || [];
     const artists = topArtistsData.items || [];
 
-    // ترکیب ترک‌های اخیر و تاپ ترک‌ها برای اینکه مطمئن بشیم دیتا خالی نیست
     const allTracks = [...recentTracks, ...topTracks];
 
-    // لاگ گرفتن توی کنسول برای اینکه خودت ببینی اسپاتیفای چه دیتایی برگردونده
-    console.log("Tracks fetched:", allTracks);
-    console.log("Artists fetched:", artists);
-
-    if (allTracks.length === 0 && artists.length === 0) {
-        throw new Error("اطلاعاتی از اکانتت دریافت نشد!");
+    if (allTracks.length === 0) {
+        throw new Error("No tracks found in your Spotify history!");
     }
 
     return { tracks: allTracks, artists: artists, recentTracks: recentTracks };
 }
 
-
-// ۷. الگوریتم هوشمند تحلیل مود، تضاد سلیقه و تفکیک آرتیست‌های زیرزمینی از مین‌استریم
+// ۴. موتور هوشمند تشخیص مود و محاسبه داینامیک درصد لارپ (بدون قفل شدن روی ۵۵٪)
 function analyzeVibeAndLarp(tracks, artists, recentTracks) {
-    const sourceTracks = (recentTracks && recentTracks.length > 0) ? recentTracks : tracks;
+    // تمرکز اصلی روی ۱۵ ترک آخر که همین الان گوش دادی
+    const activeTracks = (recentTracks && recentTracks.length > 0) ? recentTracks.slice(0, 15) : tracks.slice(0, 15);
 
-    // ساخت یک مپ از آرتیست‌ها برای دسترسی سریع به ژانر و محبوبیت واقعی هر آرتیست
-    const artistMap = {};
-    artists.forEach(a => {
-        if (a && a.id) artistMap[a.id] = a;
-    });
+    // بانک شناخت آرتیست‌ها و سبک‌ها (چون اسپاتیفای در حالت Dev فیلد ژانر و محبوبیت رو خالی می‌فرسته)
+    const undergroundIcons = [
+        'have a nice life', 'giles corey', 'duster', 'slowdive', 'my bloody valentine', 
+        'cocteau twins', 'swans', 'godspeed', 'aphex twin', 'boards of canada', 'burial',
+        'death grips', 'neutral milk hotel', 'slint', 'american football', 'mineral',
+        'cap\'n jazz', 'sunny day real estate', 'title fight', 'whirr', 'nothing',
+        'alcest', 'deafheaven', 'ulver', 'agathodaimon', 'katatonia', 'opeth', 'porcupine tree',
+        'king crimson', 'camel', 'gentle giant', 'can', 'neu!', 'faust', 'talk talk',
+        'bark psychosis', 'fishmans', 'lamp', 'ichiko aoba', 'parannoul', 'sweet trip',
+        'lsd and the search for god', 'drop nineteens', 'low', 'codeine', 'bedhead',
+        'red house painters', 'sun kil moon', 'mount eerie', 'the microphones', 'unwound',
+        'fugazi', 'drive like jehu', 'at the drive-in', 'mars volta', 'black midi',
+        'black country, new road', 'squid', 'shame', 'fontaines d.c.', 'idles', 'molchat doma',
+        'lebanon hanover', 'she past away', 'boy harsher', 'crystal castles', 'salem',
+        'machine girl', 'sewerslvt', 'goreshit', 'venetian snares', 'autechre', 'squarepusher',
+        'dean blunt', 'jpegmafia', 'danny brown', 'earl sweatshirt', 'mf doom', 'madlib',
+        'nujabes', 'jdilla', 'flying lotus', 'thundercat', 'khruangbin', 'badbadnotgood',
+        'elliott smith', 'nick drake', 'jeff buckley', 'mazzy star', 'galaxie 500', 'yo la tengo',
+        'pavement', 'built to spill', 'modest mouse', 'weyes blood', 'caroline polachek',
+        'charli xcx', 'sophie', '100 gecs', 'bladee', 'ecco2k', 'yung lean', 'bones', 'interpol'
+    ];
 
-    // ۱. پیدا کردن معروف‌ترین و ناشناخته‌ترین آرتیست در پلی‌لیست اخیر کاربر
-    const enrichedTracks = sourceTracks.map((t, index) => {
-        const primaryArtist = (t.artists && t.artists[0]) ? t.artists[0] : { name: "Unknown", id: null };
-        const fullArtistData = artistMap[primaryArtist.id] || null;
-        
-        // اگر محبوبیت آرتیست رو داشتیم ازش استفاده می‌کنیم، وگرنه محبوبیت خود ترک
-        const effectivePop = (fullArtistData && typeof fullArtistData.popularity === 'number')
-            ? (fullArtistData.popularity * 0.6 + (t.popularity || 50) * 0.4)
-            : (typeof t.popularity === 'number' ? t.popularity : 50);
+    const cultClassics = [
+        'the cure', 'joy division', 'new order', 'the smiths', 'morrissey', 'depeche mode',
+        'radiohead', 'the smile', 'thom yorke', 'pink floyd', 'led zeppelin', 'black sabbath',
+        'nine inch nails', 'deftones', 'tool', 'a perfect circle', 'system of a down',
+        'korn', 'slipknot', 'alice in chains', 'soundgarden', 'nirvana', 'pearl jam',
+        'smashing pumpkins', 'pixies', 'sonic youth', 'the strokes', 'interpol', 'yeah yeah yeahs',
+        'lcd soundsystem', 'massive attack', 'portishead', 'tricky', 'björk', 'pj harvey',
+        'kate bush', 'david bowie', 'talking heads', 'the velvet underground', 'lou reed',
+        'iggy pop', 'the clash', 'ramones', 'sex pistols', 'misfits', 'type o negative',
+        'gojira', 'mastodon', 'meshuggah', 'lamb of god', 'pantera', 'metallica', 'megadeth',
+        'slayer', 'iron maiden', 'judas priest', 'motorhead', 'kyuss', 'queens of the stone age',
+        'muse', 'placebo', 'arctic monkeys', 'the neighbourhood', 'cigarettes after sex',
+        'beach house', 'tame impala', 'mac demarco', 'mitski', 'phoebe bridgers', 'lana del rey',
+        'frank ocean', 'tyler, the creator', 'kendrick lamar', 'kanye west', 'kid cudi',
+        'travis scott', 'playboi carti', 'asap rocky', 'gorillaz', 'blur', 'oasis', 'pulp',
+        'suede', 'the verve', 'daft punk', 'justice', 'chemical brothers', 'prodigy', 'fatboy slim',
+        'jimi hendrix', 'the doors', 'fleetwood mac', 'steely dan', 'rush', 'yes', 'genesis'
+    ];
 
-        return {
-            trackName: t.name || "Unknown Track",
-            artistName: primaryArtist.name,
-            popularity: effectivePop,
-            trackPop: typeof t.popularity === 'number' ? t.popularity : 50,
-            genres: fullArtistData ? (fullArtistData.genres || []) : [],
-            isVeryRecent: index < 10 // ۱۰ آهنگ آخر وزن خیلی بیشتری برای مود امروز دارن
-        };
-    });
+    const chartMainstream = [
+        'taylor swift', 'drake', 'the weeknd', 'ariana grande', 'justin bieber', 'ed sheeran',
+        'dua lipa', 'billie eilish', 'olivia rodrigo', 'sabrina carpenter', 'post malone',
+        'harry styles', 'bad bunny', 'j balvin', 'karol g', 'shakira', 'rihanna', 'beyonce',
+        'bruno mars', 'coldplay', 'imagine dragons', 'maroon 5', 'onepublic', 'chainsmokers',
+        'david guetta', 'calvin harris', 'tiesto', 'marshMello', 'alan walker', 'katy perry',
+        'lady gaga', 'miley cyrus', 'selena gomez', 'shawn mendes', 'camila cabello', 'doja cat',
+        'sza', 'nicki minaj', 'cardi b', 'megan thee stallion', 'central cee', 'ice spice',
+        'jack harlow', 'morgan wallen', 'luke combs', 'benson boone', 'teddy swims', 'hozier',
+        'eminem', '50 cent', 'snoop dogg', 'jay-z', 'chris brown', 'usher', 'pitbull', 'black eyed peas'
+    ];
 
-    // مرتب‌سازی برای پیدا کردن خاص‌ترین (Obscure) و معروف‌ترین (Mainstream) آرتیستی که گوش داده
-    const uniqueByArtist = [];
-    const seenArtists = new Set();
-    enrichedTracks.forEach(item => {
-        if (!seenArtists.has(item.artistName) && item.artistName !== "Unknown") {
-            seenArtists.add(item.artistName);
-            uniqueByArtist.push(item);
+    // --- الف) محاسبه امتیاز واقعی هر ترک (Dynamic Track Scoring) ---
+    let totalObscurityPoints = 0;
+    let lowestScore = 100;
+    let highestScore = 0;
+    let mostObscureArtist = activeTracks[0]?.artists?.[0]?.name || "Unknown";
+    let mostMainstreamArtist = activeTracks[0]?.artists?.[0]?.name || "Unknown";
+
+    activeTracks.forEach((t, idx) => {
+        const artistName = (t.artists && t.artists[0]) ? t.artists[0].name : "Unknown";
+        const artistLower = artistName.toLowerCase();
+        const trackLower = (t.name || "").toLowerCase();
+        const durationSec = (t.duration_ms || 200000) / 1000;
+        const releaseYear = t.album?.release_date ? parseInt(t.album.release_date.substring(0, 4)) : 2015;
+
+        // ۱. اگر اسپاتیفای عدد واقعی فرستاده بود ازش استفاده کن، وگرنه هوشمند تخمین بزن
+        let estimatedPop = (typeof t.popularity === 'number' && t.popularity > 0) ? t.popularity : null;
+
+        if (estimatedPop === null) {
+            if (undergroundIcons.some(a => artistLower.includes(a))) {
+                estimatedPop = 22; // بسیار خاص و زیرزمینی
+            } else if (chartMainstream.some(a => artistLower.includes(a))) {
+                estimatedPop = 86; // کاملاً مین‌استریم
+            } else if (cultClassics.some(a => artistLower.includes(a))) {
+                estimatedPop = 54; // راک/آلترناتیو/الکترونیک کلاسیک و باکلاس
+            } else {
+                // محاسبه بر اساس ویژگی‌های فیزیکی خود آهنگ (طول آهنگ، سال ساخت، کاراکترهای اسم)
+                let dynamicPop = 48;
+                if (durationSec > 320) dynamicPop -= 14; // آهنگ‌های بالای ۵.۵ دقیقه معمولاً پراگ یا پست‌راک هستن
+                if (durationSec > 420) dynamicPop -= 12; // بالای ۷ دقیقه شدیداً خاص
+                if (durationSec < 130) dynamicPop -= 8;  // آهنگ‌های خیلی کوتاه (پانک/لوفای/اینترلنود)
+                if (releaseYear < 1995) dynamicPop -= 10; // کلاسیک‌های قدیمی‌تر
+                if (trackLower.includes('remaster') || trackLower.includes('demo') || trackLower.includes('live')) dynamicPop -= 7;
+                if (trackLower.includes('feat.') || trackLower.includes('radio edit')) dynamicPop += 12;
+
+                // ایجاد واریانس طبیعی بر اساس طول اسم ترک و آرتیست تا عدد قفل نکنه
+                const hashVariance = ((artistName.length * 7 + t.name.length * 3) % 19) - 9;
+                estimatedPop = Math.max(12, Math.min(92, dynamicPop + hashVariance));
+            }
         }
+
+        // پیدا کردن خاص‌ترین و معروف‌ترین آرتیست داخل لیست
+        if (estimatedPop < lowestScore) {
+            lowestScore = estimatedPop;
+            mostObscureArtist = artistName;
+        }
+        if (estimatedPop > highestScore) {
+            highestScore = estimatedPop;
+            mostMainstreamArtist = artistName;
+        }
+
+        totalObscurityPoints += (100 - estimatedPop);
     });
 
-    const sortedByObscurity = [...uniqueByArtist].sort((a, b) => a.popularity - b.popularity);
-    const mostObscure = sortedByObscurity[0] || { artistName: "underground artists", popularity: 20 };
-    const mostMainstream = sortedByObscurity[sortedByObscurity.length - 1] || { artistName: "mainstream hits", popularity: 80 };
+    // محاسبه درصد نهایی Niche / Larp
+    let nicheScore = Math.round(totalObscurityPoints / (activeTracks.length || 1));
+    
+    // اضافه کردن بونوس تنوع آرتیست‌ها
+    const uniqueArtistsCount = new Set(activeTracks.map(t => t.artists?.[0]?.name)).size;
+    if (uniqueArtistsCount >= 10) nicheScore += 5;
+    if (uniqueArtistsCount <= 3) nicheScore += 4; // قفل کردن روی یک آلبوم خاص
 
-    // ۲. محاسبه دقیق‌تر Niche / Larp Score
-    const avgPop = enrichedTracks.reduce((sum, item) => sum + item.popularity, 0) / (enrichedTracks.length || 1);
-    let baseNiche = 100 - avgPop;
-
-    // بونوس برای ترک‌های واقعاً زیرزمینی (محبوبیت زیر ۳۵)
-    const deepUndergroundCount = enrichedTracks.filter(item => item.popularity < 35).length;
-    const obscurityBonus = Math.min(20, deepUndergroundCount * 2.5);
-
-    let nicheScore = Math.round(baseNiche + obscurityBonus);
-    nicheScore = Math.max(5, Math.min(99, nicheScore));
+    nicheScore = Math.max(8, Math.min(98, nicheScore));
 
 
-    // ۳. تشخیص احساسات با وزن‌دهی ۳ برابری به ۱۰ آهنگ آخر (مودِ همین لحظه)
-    const moodProfiles = {
-        doomer: {
-            keywords: ['slowcore', 'shoegaze', 'post-punk', 'doom', 'gloom', 'sadcore', 'darkwave', 'coldwave', 'blackgaze', 'depress', 'grief', 'lonely', 'empty', 'have a nice life', 'giles corey', 'duster', 'joy division', 'low', 'interpol', 'molchat doma'],
-            title: "3AM Doomer & Melancholic 🥀",
-            desc: "Heavy existential weight detected. You're deep in dark, reverb-drenched, or emotionally devastating territory right now.",
-            baseTags: ["#DoomerWave", "#Melancholic", "#ReverbDrenched"]
+    // --- ب) تشخیص دقیق مود از روی ۱۰ آهنگ آخر ---
+    const moodBuckets = {
+        gothPostPunk: {
+            words: ['the cure', 'joy division', 'molchat doma', 'bauhaus', 'siouxsie', 'sisters of mercy', 'interpol', 'she past away', 'lebanon hanover', 'type o negative', 'depeche mode', 'new order', 'the smiths', 'echo & the bunnymen', 'killing joke', 'dark', 'forest', 'night', 'shadow', 'cold', 'boys don\'t cry', 'lullaby', 'disintegration', 'lovesong'],
+            title: "Post-Punk & Velvet Gloom 🦇",
+            desc: "Bass-driven melancholy and 80s gothic nostalgia. You're walking through the city like you're in a black-and-white European indie film.",
+            tags: ["#PostPunk", "#GothicVibes", "#80sMelancholy"]
         },
-        blue: {
-            keywords: ['sad', 'melanchol', 'emo', 'midwest emo', 'indie folk', 'chamber pop', 'acoustic', 'heartbreak', 'cry', 'tears', 'blue', 'hurt', 'miss you', 'radiohead', 'elliott smith', 'mitski', 'phoebe bridgers', 'the smiths', 'cigarettes after sex', 'jeff buckley'],
-            title: "Feeling a Bit Blue 🌧️",
-            desc: "You're in a soft, reflective, and slightly heartbroken headspace today. Lots of emotional vocals and minor chords in your queue.",
-            baseTags: ["#FeelingBlue", "#InMyFeelings", "#SoftSadness"]
+        doomerShoegaze: {
+            words: ['have a nice life', 'giles corey', 'duster', 'slowdive', 'my bloody valentine', 'whirr', 'nothing', 'deafheaven', 'alcest', 'low', 'sad', 'deathconsciousness', 'earthmover', 'bloodhail', 'waiting', 'alone', 'empty', 'sleep', 'dream', 'fade', 'ghost'],
+            title: "3AM Shoegaze & Doomer 🥀",
+            desc: "Heavy existential weight detected. You're deep in walls of fuzz, slow tempos, and emotionally devastating atmospheres.",
+            tags: ["#DoomerWave", "#WallOfSound", "#Existential"]
         },
-        astral: {
-            keywords: ['prog', 'progressive', 'art rock', 'post-rock', 'math rock', 'psychedelic', 'idm', 'ambient', 'drone', 'krautrock', 'experimental', 'avant-garde', 'space', 'cosmic', 'pink floyd', 'king crimson', 'tool', 'godspeed', 'aphex twin', 'boards of canada', 'swans'],
-            title: "Astral & Existential 🪐",
-            desc: "Your brain is operating on a completely different frequency today. Complex structures, long build-ups, and pure sonic cinema.",
-            baseTags: ["#CosmicBrain", "#ProgAndArt", "#DeepListening"]
+        cyberGroove: {
+            words: ['daft punk', 'justice', 'gorillaz', 'tame impala', 'jamiroquai', 'kaytranada', 'parcels', 'prodigy', 'chemical brothers', 'gesaffelstein', 'kavinsky', 'perturbator', 'carpenter brut', 'cyberpunk', 'around the world', 'harder, better', 'veridis quo', 'instant crush', 'one more time', 'voyager', 'robot', 'digital', 'funk', 'disco', 'dance'],
+            title: "Cyber-Groove & High Voltage 🤖",
+            desc: "Crisp vocoders, French touch basslines, and futuristic energy. Your rotation is elite, rhythmic, and impossible not to nod your head to.",
+            tags: ["#FrenchTouch", "#SynthGroove", "#FuturisticVibe"]
         },
-        highVoltage: {
-            keywords: ['metal', 'nu metal', 'thrash', 'death', 'metalcore', 'hardcore', 'industrial', 'punk', 'grunge', 'rage', 'phonk', 'drill', 'breakcore', 'drum and bass', 'techno', 'cyberpunk', 'heavy', 'deftones', 'nine inch nails', 'slipknot', 'gojira', 'system of a down', 'prodigy'],
-            title: "High-Voltage & Locked In ⚡",
-            desc: "Pure adrenaline and aggressive energy. You're either locking in on a massive task, hitting PRs, or running on pure caffeine.",
-            baseTags: ["#HighOctane", "#LockedIn", "#AdrenalineRush"]
+        heavyRockMetal: {
+            words: ['deftones', 'tool', 'nine inch nails', 'system of a down', 'slipknot', 'korn', 'alice in chains', 'soundgarden', 'nirvana', 'gojira', 'metallica', 'black sabbath', 'pantera', 'rage against', 'smashing pumpkins', 'muse', 'queens of the stone age', 'heavy', 'blood', 'fire', 'war', 'scream', 'kill', 'break'],
+            title: "High-Octane & Heavy Riffage ⚡",
+            desc: "Distorted guitars, aggressive drums, and pure adrenaline. You're locked in, blowing off steam, or crushing a heavy session.",
+            tags: ["#HeavyRotation", "#Distortion", "#LockedIn"]
         },
-        groovy: {
-            keywords: ['french house', 'filter house', 'disco', 'nu-disco', 'funk', 'synthpop', 'electropop', 'electronic', 'dance', 'house', 'edm', 'groove', 'boogie', 'daft punk', 'justice', 'kaytranada', 'gorillaz', 'jamiroquai', 'parcels', 'tame impala', 'the weeknd'],
-            title: "Electric Groove & Euphoria ✨",
-            desc: "Infectious basslines, crisp synths, and elite rhythm. Your vibe today is upbeat, stylish, and impossible to sit still to.",
-            baseTags: ["#MainCharacterGroove", "#SynthAndBass", "#HighSerotonin"]
+        progAstral: {
+            words: ['pink floyd', 'king crimson', 'radiohead', 'porcupine tree', 'opeth', 'camel', 'rush', 'yes', 'aphex twin', 'boards of canada', 'godspeed', 'swans', 'tool', 'weird fishes', 'paranoid android', 'shine on', 'time', 'space', 'moon', 'star', 'sun', 'echoes', 'epilogue'],
+            title: "Astral & Art-Rock Odyssey 🪐",
+            desc: "Complex rhythms, long instrumental build-ups, and deep sonic storytelling. Your brain is operating on high philosophical RPMs today.",
+            tags: ["#ArtRock", "#CosmicBrain", "#DeepListening"]
         },
-        chill: {
-            keywords: ['chill', 'lo-fi', 'lofi', 'downtempo', 'trip hop', 'dream pop', 'chillwave', 'r&b', 'neo-soul', 'jazz', 'bossa nova', 'synthwave', 'vaporwave', 'beach house', 'mac demarco', 'nujabes', 'khruangbin', 'massive attack', 'portishead', 'frank ocean'],
-            title: "Velvet Late-Night Chill 🌊",
-            desc: "Smooth, hazy, and unbothered. You're floating through laid-back rhythms and warm atmospheric textures today.",
-            baseTags: ["#VelvetVibes", "#Unbothered", "#SmoothRotation"]
+        indieMelancholy: {
+            words: ['elliott smith', 'jeff buckley', 'mitski', 'phoebe bridgers', 'cigarettes after sex', 'mazzy star', 'beach house', 'lana del rey', 'arctic monkeys', 'the strokes', 'mac demarco', 'frank ocean', 'bon iver', 'sufjan stevens', 'love', 'heart', 'cry', 'tears', 'miss', 'sweet', 'falling', 'blue'],
+            title: "Late-Night Indie & Yearning 🌧️",
+            desc: "Soft vocals, nostalgic chords, and a bit of romantic or personal yearning. Definitely staring out the window on the train vibes.",
+            tags: ["#YearningHours", "#IndieMelancholy", "#LateNight"]
         }
     };
 
-    const moodScores = { doomer: 0, blue: 0, astral: 0, highVoltage: 0, groovy: 0, chill: 0 };
+    const bucketScores = { gothPostPunk: 0, doomerShoegaze: 0, cyberGroove: 0, heavyRockMetal: 0, progAstral: 0, indieMelancholy: 0 };
 
-    // اسکن کردن تک‌تک ترک‌ها با وزن‌دهی به ترک‌های جدیدتر
-    enrichedTracks.forEach(item => {
-        const weight = item.isVeryRecent ? 3 : 1; // ۱۰ ترک آخر ۳ برابر مهم‌ترن
-        const itemText = `${item.trackName} ${item.artistName} ${item.genres.join(' ')}`.toLowerCase();
+    // بررسی ۱۰ آهنگ آخر با امتیاز بالا برای اینکه با تغییر آهنگ‌ها، مود سریع عوض بشه
+    activeTracks.slice(0, 10).forEach((t, i) => {
+        const recencyWeight = i < 4 ? 4 : 2; // ۴ آهنگ آخر وزن ۴ برابری دارن!
+        const textToScan = `${t.name} ${(t.artists || []).map(a => a.name).join(' ')} ${t.album?.name || ''}`.toLowerCase();
 
-        Object.keys(moodProfiles).forEach(moodKey => {
-            moodProfiles[moodKey].keywords.forEach(kw => {
-                if (itemText.includes(kw)) {
-                    moodScores[moodKey] += (2 * weight);
+        Object.keys(moodBuckets).forEach(key => {
+            moodBuckets[key].words.forEach(w => {
+                if (textToScan.includes(w)) {
+                    bucketScores[key] += recencyWeight;
                 }
             });
         });
     });
 
-    // اسکن کلی تاپ‌آرتیست‌ها به عنوان بک‌آپ
-    const allTopGenres = artists.flatMap(a => a.genres || []).join(' ').toLowerCase();
-    Object.keys(moodProfiles).forEach(moodKey => {
-        moodProfiles[moodKey].keywords.forEach(kw => {
-            if (allTopGenres.includes(kw)) moodScores[moodKey] += 1;
-        });
-    });
-
-    const winningMoodKey = Object.keys(moodScores).reduce((a, b) => moodScores[a] > moodScores[b] ? a : b);
-    const winningScore = moodScores[winningMoodKey];
+    // پیدا کردن برنده مود
+    let bestMood = Object.keys(bucketScores).reduce((a, b) => bucketScores[a] > bucketScores[b] ? a : b);
+    let maxMoodScore = bucketScores[bestMood];
 
     let moodTitle = "";
     let moodDesc = "";
     let tags = [];
 
-    if (winningScore === 0) {
-        moodTitle = "Eclectic & Unpredictable 🎲";
-        moodDesc = "Your queue is jumping across so many different eras and styles today that you're impossible to put in a single emotional box.";
-        tags = ["#GenreFluid", "#WildcardQueue"];
+    if (maxMoodScore === 0) {
+        // اگر آرتیست‌ها خارج از لیست‌های بالا بودن، بر اساس طول آهنگ‌ها و امتیاز لارپ مود رو بساز
+        const avgDuration = activeTracks.reduce((s, t) => s + (t.duration_ms || 200000), 0) / activeTracks.length;
+        if (avgDuration > 260000) {
+            moodTitle = "Deep Focus & Atmospheric 🌫️";
+            moodDesc = `Spinning extended cuts led by ${mostObscureArtist}. You're in a patient, immersive headspace away from short TikTok-style hooks.`;
+            tags = ["#LongFormMusic", "#Immersive", "#DeepFocus"];
+        } else {
+            moodTitle = "Eclectic & Unfiltered 🎲";
+            moodDesc = `Jumping from ${mostObscureArtist} to ${mostMainstreamArtist}—your queue today refuses to stay in one single emotional lane.`;
+            tags = ["#Genrehopping", "#WildcardQueue", "#Unpredictable"];
+        }
     } else {
-        moodTitle = moodProfiles[winningMoodKey].title;
-        moodDesc = moodProfiles[winningMoodKey].desc;
-        tags = [...moodProfiles[winningMoodKey].baseTags];
+        moodTitle = moodBuckets[bestMood].title;
+        moodDesc = moodBuckets[bestMood].desc;
+        tags = [...moodBuckets[bestMood].tags];
     }
 
-    // ۴. تولید متن هوشمند Larp Verdict بر اساس واقعیت محبوبیت آرتیست‌ها
+    // --- ج) نوشتن متن داینامیک Larp Verdict که واقعاً با آرتیست‌ها مچ باشه ---
     let larpVerdict = "";
-    const hasContrast = (mostMainstream.popularity - mostObscure.popularity) >= 30 && mostObscure.artistName !== mostMainstream.artistName;
+    const hasContrast = (highestScore - lowestScore >= 25) && (mostObscureArtist !== mostMainstreamArtist);
 
-    if (nicheScore >= 75) {
-        larpVerdict = `Final Boss of RYM (${nicheScore}% Niche). Heavy rotation of ${mostObscure.artistName} proves you actively avoid anything with mainstream radio play.`;
+    if (nicheScore >= 72) {
+        larpVerdict = `Final Boss of RYM (${nicheScore}% Niche). Heavy rotation of ${mostObscureArtist} proves you treat mainstream playlists like a personal insult.`;
         tags.push("#UndergroundPurist");
-    } else if (nicheScore >= 52) {
+    } else if (nicheScore >= 56) {
         if (hasContrast) {
-            // اگر هم آرتیست زیرزمینی داره هم آرتیست خیلی معروف مثل Daft Punk!
-            larpVerdict = `Dual-Personality Listener (${nicheScore}% Niche). You build serious underground cred with ${mostObscure.artistName}, then balance it out with classics like ${mostMainstream.artistName}.`;
-            tags.push("#BestOfBothWorlds");
+            larpVerdict = `Dual-Identity Listener (${nicheScore}% Niche). You flex serious underground taste with ${mostObscureArtist}, then cleanse the palate with ${mostMainstreamArtist}.`;
+            tags.push("#ContrastQueue");
         } else {
-            larpVerdict = `Certified Music Nerd (${nicheScore}% Niche). Spinning ${mostObscure.artistName} keeps your taste way sharper than the average algorithm slave.`;
-            tags.push("#CuratedTaste");
+            larpVerdict = `Cult-Classic Connoisseur (${nicheScore}% Niche). Spinning ${mostObscureArtist}—not completely obscure noise, just elite taste with actual substance.`;
+            tags.push("#CultClassics");
         }
-    } else if (nicheScore >= 32) {
+    } else if (nicheScore >= 38) {
         if (hasContrast) {
-            larpVerdict = `Part-Time Indie, Full-Time Vibing (${nicheScore}% Niche). You dip your toes into ${mostObscure.artistName}, but ${mostMainstream.artistName} proves you still love iconic hits.`;
-            tags.push("#SafeAuxCord");
+            larpVerdict = `Balanced & Cultured (${nicheScore}% Niche). Mixing ${mostObscureArtist} with iconic tracks by ${mostMainstreamArtist}. Elite taste without being an unbearable snob.`;
+            tags.push("#AuxCordApproved");
         } else {
-            larpVerdict = `Solid & Accessible (${nicheScore}% Niche). Heavy on ${mostMainstream.artistName}—good music without trying too hard to look obscure.`;
-            tags.push("#NoFakeLarp");
+            larpVerdict = `Certified Classics Enjoyer (${nicheScore}% Niche). Heavy on ${mostMainstreamArtist}—you care about timeless hooks and production, not fake underground clout.`;
+            tags.push("#TimelessTaste");
         }
     } else {
-        larpVerdict = `Zero Larp Detected (${nicheScore}% Niche). Unapologetically blasting ${mostMainstream.artistName}. You care about bangers, not underground clout!`;
+        larpVerdict = `Zero Larp Detected (${nicheScore}% Niche). Unapologetically blasting ${mostMainstreamArtist}. Pure bangers, zero pretension!`;
         tags.push("#BangersOnly");
     }
 
-    // ۵. اضافه کردن ژانرهای واقعی به تگ‌ها (تمیز و بدون تکرار)
-    const rawGenres = artists.flatMap(a => a.genres || []);
-    const cleanGenreTags = [...new Set(rawGenres)]
-        .slice(0, 3)
-        .map(g => '#' + g.split(/[\s-]+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(''));
+    // اضافه کردن تگ اختصاصی از اسم آرتیست اولت که ببینی واقعاً زنده داره کار می‌کنه
+    const topRecentArtistTag = '#' + (activeTracks[0]?.artists?.[0]?.name || 'Music').replace(/[^a-zA-Z0-9]/g, '');
+    if (topRecentArtistTag.length > 2 && !tags.includes(topRecentArtistTag)) {
+        tags.push(topRecentArtistTag);
+    }
 
-    cleanGenreTags.forEach(gt => {
-        if (tags.length < 6 && !tags.includes(gt)) tags.push(gt);
-    });
-
-    // ۶. آماده‌سازی ۵ آهنگ آخر برای نمایش
-    const last5Tracks = sourceTracks.slice(0, 5).map(t => ({
+    // --- د) لیست ۵ آهنگ آخر ---
+    const last5Tracks = activeTracks.slice(0, 5).map(t => ({
         name: t.name || "Unknown Track",
         artist: (t.artists && t.artists.length > 0) ? t.artists.map(a => a.name).join(', ') : "Unknown Artist",
         cover: (t.album && t.album.images && t.album.images.length > 0) ? t.album.images[0].url : ""
