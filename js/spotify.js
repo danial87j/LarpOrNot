@@ -117,192 +117,188 @@ async function fetchSpotifyData(token) {
 }
 
 
-// ۷. الگوریتم پیشرفته تحلیل مود، ژانرها و محاسبه وزن‌دار Larp / Niche Score
+// ۷. الگوریتم هوشمند تحلیل مود، تضاد سلیقه و تفکیک آرتیست‌های زیرزمینی از مین‌استریم
 function analyzeVibeAndLarp(tracks, artists, recentTracks) {
     const sourceTracks = (recentTracks && recentTracks.length > 0) ? recentTracks : tracks;
 
-    // --- الف) الگوریتم پیشرفته محاسبه Niche / Larp Score ---
-    const validTracks = sourceTracks.filter(t => typeof t.popularity === 'number');
-    const validArtists = artists.filter(a => typeof a.popularity === 'number');
-
-    // ۱. میانگین پایه محبوبیت (۰ تا ۱۰۰)
-    const avgTrackPop = validTracks.length > 0
-        ? validTracks.reduce((sum, t) => sum + t.popularity, 0) / validTracks.length
-        : 45;
-
-    const avgArtistPop = validArtists.length > 0
-        ? validArtists.reduce((sum, a) => sum + a.popularity, 0) / validArtists.length
-        : avgTrackPop;
-
-    // وزن بیشتر به ترک‌های اخیر (۶۵٪ ترک‌ها، ۳۵٪ آرتیست‌ها)
-    const weightedPopularity = (avgTrackPop * 0.65) + (avgArtistPop * 0.35);
-    let baseNiche = 100 - weightedPopularity;
-
-    // ۲. بونوس زیرزمینی (Underground Bonus): به ازای هر ترکی که محبوبیتش زیر ۳۵ باشه امتیاز اضافه می‌دیم
-    const undergroundTracksCount = validTracks.filter(t => t.popularity < 35).length;
-    const ultraObscureCount = validTracks.filter(t => t.popularity < 18).length;
-    const obscurityBonus = (undergroundTracksCount * 1.5) + (ultraObscureCount * 2.5);
-
-    // جمع‌آوری تمام ژانرها، نام ترک‌ها و آرتیست‌ها برای اسکن متنی
-    const rawGenresList = artists.flatMap(a => a.genres || []);
-    const allGenres = rawGenresList.join(' ').toLowerCase();
-    const trackNames = sourceTracks.map(t => t.name || '').join(' ').toLowerCase();
-    const artistNames = sourceTracks.flatMap(t => (t.artists || []).map(a => a.name.toLowerCase())).join(' ');
-    const combinedText = `${allGenres} ${trackNames} ${artistNames}`;
-
-    // ۳. بونوس ژانرهای لارپی و خاص (RYM / Music Nerd Genres)
-    const larpMultiplierGenres = [
-        'shoegaze', 'slowcore', 'post-rock', 'post-punk', 'math rock', 'midwest emo',
-        'noise', 'drone', 'ambient', 'krautrock', 'no wave', 'coldwave', 'darkwave',
-        'blackgaze', 'breakcore', 'idm', 'glitch', 'avant-garde', 'experimental',
-        'art rock', 'prog', 'progressive', 'ethereal', 'witch house', 'vaporwave',
-        'lo-fi', 'sadcore', 'dream pop', 'neoclassical', 'dungeon synth', 'sludge'
-    ];
-
-    let genreLarpBonus = 0;
-    larpMultiplierGenres.forEach(g => {
-        if (combinedText.includes(g)) genreLarpBonus += 3.5;
+    // ساخت یک مپ از آرتیست‌ها برای دسترسی سریع به ژانر و محبوبیت واقعی هر آرتیست
+    const artistMap = {};
+    artists.forEach(a => {
+        if (a && a.id) artistMap[a.id] = a;
     });
-    // سقف بونوس ژانر تا ۱۸ درصد
-    genreLarpBonus = Math.min(18, genreLarpBonus);
 
-    // محاسبه نهایی امتیاز لارپ با منحنی غیرخطی (بین ۱ تا ۹۹ درصد)
-    let nicheScore = Math.round(baseNiche + obscurityBonus + genreLarpBonus);
-    nicheScore = Math.max(4, Math.min(99, nicheScore));
+    // ۱. پیدا کردن معروف‌ترین و ناشناخته‌ترین آرتیست در پلی‌لیست اخیر کاربر
+    const enrichedTracks = sourceTracks.map((t, index) => {
+        const primaryArtist = (t.artists && t.artists[0]) ? t.artists[0] : { name: "Unknown", id: null };
+        const fullArtistData = artistMap[primaryArtist.id] || null;
+        
+        // اگر محبوبیت آرتیست رو داشتیم ازش استفاده می‌کنیم، وگرنه محبوبیت خود ترک
+        const effectivePop = (fullArtistData && typeof fullArtistData.popularity === 'number')
+            ? (fullArtistData.popularity * 0.6 + (t.popularity || 50) * 0.4)
+            : (typeof t.popularity === 'number' ? t.popularity : 50);
+
+        return {
+            trackName: t.name || "Unknown Track",
+            artistName: primaryArtist.name,
+            popularity: effectivePop,
+            trackPop: typeof t.popularity === 'number' ? t.popularity : 50,
+            genres: fullArtistData ? (fullArtistData.genres || []) : [],
+            isVeryRecent: index < 10 // ۱۰ آهنگ آخر وزن خیلی بیشتری برای مود امروز دارن
+        };
+    });
+
+    // مرتب‌سازی برای پیدا کردن خاص‌ترین (Obscure) و معروف‌ترین (Mainstream) آرتیستی که گوش داده
+    const uniqueByArtist = [];
+    const seenArtists = new Set();
+    enrichedTracks.forEach(item => {
+        if (!seenArtists.has(item.artistName) && item.artistName !== "Unknown") {
+            seenArtists.add(item.artistName);
+            uniqueByArtist.push(item);
+        }
+    });
+
+    const sortedByObscurity = [...uniqueByArtist].sort((a, b) => a.popularity - b.popularity);
+    const mostObscure = sortedByObscurity[0] || { artistName: "underground artists", popularity: 20 };
+    const mostMainstream = sortedByObscurity[sortedByObscurity.length - 1] || { artistName: "mainstream hits", popularity: 80 };
+
+    // ۲. محاسبه دقیق‌تر Niche / Larp Score
+    const avgPop = enrichedTracks.reduce((sum, item) => sum + item.popularity, 0) / (enrichedTracks.length || 1);
+    let baseNiche = 100 - avgPop;
+
+    // بونوس برای ترک‌های واقعاً زیرزمینی (محبوبیت زیر ۳۵)
+    const deepUndergroundCount = enrichedTracks.filter(item => item.popularity < 35).length;
+    const obscurityBonus = Math.min(20, deepUndergroundCount * 2.5);
+
+    let nicheScore = Math.round(baseNiche + obscurityBonus);
+    nicheScore = Math.max(5, Math.min(99, nicheScore));
 
 
-    // --- ب) دیکشنری گسترده ژانرها و کلمات کلیدی برای تشخیص دقیق احساسات ---
-    const moodLexicon = {
-        blue: [
-            'sad', 'melanchol', 'slowcore', 'shoegaze', 'post-punk', 'doom', 'gloom', 
-            'emo', 'midwest emo', 'sadcore', 'darkwave', 'coldwave', 'depress', 'post-rock', 
-            'lonely', 'blue', 'cry', 'heartbreak', 'grief', 'tears', 'hurt', 'empty', 
-            'have a nice life', 'radiohead', 'elliott smith', 'cigarettes after sex', 
-            'mitski', 'phoebe bridgers', 'joy division', 'the smiths', 'interpol', 'low', 
-            'duster', 'giles corey', 'car seat headrest', 'chamber pop', 'indie folk', 'acoustic'
-        ],
-        happy: [
-            'happy', 'pop', 'dance', 'disco', 'funk', 'upbeat', 'party', 'house', 
-            'french house', 'nu-disco', 'sunshine', 'good', 'tropical', 'synthpop', 
-            'indie pop', 'feel good', 'daft punk', 'electropop', 'hyperpop', 'eurodance', 
-            'boogie', 'soul', 'motown', 'summer', 'bright', 'groove', 'funky', 'city pop', 
-            'bedroom pop', 'afrobeats', 'reggaeton', 'bubblegum'
-        ],
-        intense: [
-            'metal', 'heavy metal', 'nu metal', 'thrash', 'death', 'black metal', 'metalcore',
-            'rock', 'hard rock', 'punk', 'hardcore', 'post-hardcore', 'industrial', 'grunge', 
-            'rage', 'phonk', 'drill', 'trap metal', 'techno', 'hardstyle', 'breakcore', 
-            'drum and bass', 'dnb', 'jungle', 'cyberpunk', 'neurofunk', 'dubstep', 'aggressive',
-            'deftones', 'slipknot', 'nine inch nails', 'gojira', 'tool', 'system of a down'
-        ],
-        existential: [
-            'prog', 'progressive', 'art rock', 'psychedelic', 'psych', 'experimental', 
-            'avant-garde', 'idm', 'krautrock', 'math rock', 'post-metal', 'blackgaze', 
-            'ambient', 'drone', 'space rock', 'neo-psychedelia', 'jazz fusion', 'abstract', 
-            'concept', 'pink floyd', 'king crimson', 'aphex twin', 'boards of canada', 
-            'swans', 'godspeed you! black emperor', 'alcest', 'my bloody valentine', 'cocteau twins'
-        ],
-        chill: [
-            'chill', 'lo-fi', 'lofi', 'downtempo', 'trip hop', 'chillwave', 'dream pop', 
-            'r&b', 'neo-soul', 'jazz', 'bossa nova', 'soft rock', 'indie r&b', 'lounge', 
-            'synthwave', 'retrowave', 'vaporwave', 'smooth', 'late night', 'nujabes', 
-            'khruangbin', 'mac demarco', 'tame impala', 'beach house', 'massive attack', 'portishead'
-        ]
+    // ۳. تشخیص احساسات با وزن‌دهی ۳ برابری به ۱۰ آهنگ آخر (مودِ همین لحظه)
+    const moodProfiles = {
+        doomer: {
+            keywords: ['slowcore', 'shoegaze', 'post-punk', 'doom', 'gloom', 'sadcore', 'darkwave', 'coldwave', 'blackgaze', 'depress', 'grief', 'lonely', 'empty', 'have a nice life', 'giles corey', 'duster', 'joy division', 'low', 'interpol', 'molchat doma'],
+            title: "3AM Doomer & Melancholic 🥀",
+            desc: "Heavy existential weight detected. You're deep in dark, reverb-drenched, or emotionally devastating territory right now.",
+            baseTags: ["#DoomerWave", "#Melancholic", "#ReverbDrenched"]
+        },
+        blue: {
+            keywords: ['sad', 'melanchol', 'emo', 'midwest emo', 'indie folk', 'chamber pop', 'acoustic', 'heartbreak', 'cry', 'tears', 'blue', 'hurt', 'miss you', 'radiohead', 'elliott smith', 'mitski', 'phoebe bridgers', 'the smiths', 'cigarettes after sex', 'jeff buckley'],
+            title: "Feeling a Bit Blue 🌧️",
+            desc: "You're in a soft, reflective, and slightly heartbroken headspace today. Lots of emotional vocals and minor chords in your queue.",
+            baseTags: ["#FeelingBlue", "#InMyFeelings", "#SoftSadness"]
+        },
+        astral: {
+            keywords: ['prog', 'progressive', 'art rock', 'post-rock', 'math rock', 'psychedelic', 'idm', 'ambient', 'drone', 'krautrock', 'experimental', 'avant-garde', 'space', 'cosmic', 'pink floyd', 'king crimson', 'tool', 'godspeed', 'aphex twin', 'boards of canada', 'swans'],
+            title: "Astral & Existential 🪐",
+            desc: "Your brain is operating on a completely different frequency today. Complex structures, long build-ups, and pure sonic cinema.",
+            baseTags: ["#CosmicBrain", "#ProgAndArt", "#DeepListening"]
+        },
+        highVoltage: {
+            keywords: ['metal', 'nu metal', 'thrash', 'death', 'metalcore', 'hardcore', 'industrial', 'punk', 'grunge', 'rage', 'phonk', 'drill', 'breakcore', 'drum and bass', 'techno', 'cyberpunk', 'heavy', 'deftones', 'nine inch nails', 'slipknot', 'gojira', 'system of a down', 'prodigy'],
+            title: "High-Voltage & Locked In ⚡",
+            desc: "Pure adrenaline and aggressive energy. You're either locking in on a massive task, hitting PRs, or running on pure caffeine.",
+            baseTags: ["#HighOctane", "#LockedIn", "#AdrenalineRush"]
+        },
+        groovy: {
+            keywords: ['french house', 'filter house', 'disco', 'nu-disco', 'funk', 'synthpop', 'electropop', 'electronic', 'dance', 'house', 'edm', 'groove', 'boogie', 'daft punk', 'justice', 'kaytranada', 'gorillaz', 'jamiroquai', 'parcels', 'tame impala', 'the weeknd'],
+            title: "Electric Groove & Euphoria ✨",
+            desc: "Infectious basslines, crisp synths, and elite rhythm. Your vibe today is upbeat, stylish, and impossible to sit still to.",
+            baseTags: ["#MainCharacterGroove", "#SynthAndBass", "#HighSerotonin"]
+        },
+        chill: {
+            keywords: ['chill', 'lo-fi', 'lofi', 'downtempo', 'trip hop', 'dream pop', 'chillwave', 'r&b', 'neo-soul', 'jazz', 'bossa nova', 'synthwave', 'vaporwave', 'beach house', 'mac demarco', 'nujabes', 'khruangbin', 'massive attack', 'portishead', 'frank ocean'],
+            title: "Velvet Late-Night Chill 🌊",
+            desc: "Smooth, hazy, and unbothered. You're floating through laid-back rhythms and warm atmospheric textures today.",
+            baseTags: ["#VelvetVibes", "#Unbothered", "#SmoothRotation"]
+        }
     };
 
-    const scores = { blue: 0, happy: 0, intense: 0, existential: 0, chill: 0 };
+    const moodScores = { doomer: 0, blue: 0, astral: 0, highVoltage: 0, groovy: 0, chill: 0 };
 
-    // امتیازدهی به هر دسته بر اساس تکرار در ژانرها و ترک‌ها
-    Object.keys(moodLexicon).forEach(moodKey => {
-        moodLexicon[moodKey].forEach(word => {
-            if (combinedText.includes(word)) {
-                // اگر کلمه دقیقاً توی لیست ژانرها بود ۳ امتیاز، اگر توی اسم ترک/آرتیست بود ۲ امتیاز
-                scores[moodKey] += allGenres.includes(word) ? 3 : 2;
-            }
+    // اسکن کردن تک‌تک ترک‌ها با وزن‌دهی به ترک‌های جدیدتر
+    enrichedTracks.forEach(item => {
+        const weight = item.isVeryRecent ? 3 : 1; // ۱۰ ترک آخر ۳ برابر مهم‌ترن
+        const itemText = `${item.trackName} ${item.artistName} ${item.genres.join(' ')}`.toLowerCase();
+
+        Object.keys(moodProfiles).forEach(moodKey => {
+            moodProfiles[moodKey].keywords.forEach(kw => {
+                if (itemText.includes(kw)) {
+                    moodScores[moodKey] += (2 * weight);
+                }
+            });
         });
     });
 
-    // پیدا کردن بالاترین امتیاز احساسی
-    const topMood = Object.keys(scores).reduce((a, b) => scores[a] > scores[b] ? a : b);
-    const maxScore = scores[topMood];
+    // اسکن کلی تاپ‌آرتیست‌ها به عنوان بک‌آپ
+    const allTopGenres = artists.flatMap(a => a.genres || []).join(' ').toLowerCase();
+    Object.keys(moodProfiles).forEach(moodKey => {
+        moodProfiles[moodKey].keywords.forEach(kw => {
+            if (allTopGenres.includes(kw)) moodScores[moodKey] += 1;
+        });
+    });
+
+    const winningMoodKey = Object.keys(moodScores).reduce((a, b) => moodScores[a] > moodScores[b] ? a : b);
+    const winningScore = moodScores[winningMoodKey];
 
     let moodTitle = "";
     let moodDesc = "";
     let tags = [];
 
-    if (maxScore === 0) {
-        // اگر هیچ کلمه‌ای مچ نشد، بر اساس درصد خاص بودن تصمیم بگیر
-        if (nicheScore >= 60) {
-            moodTitle = "Mysterious & Unreadable 🌑";
-            moodDesc = "Your rotation is so deep off the grid that standard mood radars can't even box you in today.";
-            tags = ["#OffTheGrid", "#EnigmaVibes"];
-        } else {
-            moodTitle = "Chill & Cruising 🎧";
-            moodDesc = "Your emotional radar is super balanced today. Not feeling blue, not overly hyped—just vibing.";
-            tags = ["#BalancedVibe", "#DailyGroove"];
-        }
-    } else if (topMood === 'blue') {
-        moodTitle = scores.blue > 10 ? "Deeply Melancholic & Blue 🌧️" : "Feeling a Bit Blue 🌧️";
-        moodDesc = "You're in a heavy, reflective headspace today. Your queue is packed with slowcore, minor chords, or emotionally devastating tracks.";
-        tags = ["#FeelingBlue", "#MelancholicState"];
-    } else if (topMood === 'existential') {
-        moodTitle = "Existential & Astral 🪐";
-        moodDesc = "Your brain is operating on another frequency today. Heavy on progressive structures, atmospheric walls of sound, and deep introspection.";
-        tags = ["#ExistentialDread", "#CosmicVibes"];
-    } else if (topMood === 'intense') {
-        moodTitle = "High Voltage & Locked In ⚡";
-        moodDesc = "Pure adrenaline and heavy distortion. You're either crushing a workout, coding at 200 WPM, or fighting inner demons.";
-        tags = ["#HighOctane", "#HeavyRotation"];
-    } else if (topMood === 'happy') {
-        moodTitle = "Dopamine Rush & Upbeat ☀️";
-        moodDesc = "You're radiating pure serotonin today! Groovy basslines, infectious hooks, and zero room for bad vibes.";
-        tags = ["#HighSpirits", "#DopamineBoost"];
+    if (winningScore === 0) {
+        moodTitle = "Eclectic & Unpredictable 🎲";
+        moodDesc = "Your queue is jumping across so many different eras and styles today that you're impossible to put in a single emotional box.";
+        tags = ["#GenreFluid", "#WildcardQueue"];
     } else {
-        moodTitle = "Late-Night Velvet & Chill 🌊";
-        moodDesc = "Smooth, hazy, and laid-back. You're floating through dreamy textures and effortless grooves today.";
-        tags = ["#DreamState", "#SmoothRotation"];
+        moodTitle = moodProfiles[winningMoodKey].title;
+        moodDesc = moodProfiles[winningMoodKey].desc;
+        tags = [...moodProfiles[winningMoodKey].baseTags];
     }
 
-    // --- ج) استخراج ۵ آهنگ اخیر برای نمایش در لیست ---
+    // ۴. تولید متن هوشمند Larp Verdict بر اساس واقعیت محبوبیت آرتیست‌ها
+    let larpVerdict = "";
+    const hasContrast = (mostMainstream.popularity - mostObscure.popularity) >= 30 && mostObscure.artistName !== mostMainstream.artistName;
+
+    if (nicheScore >= 75) {
+        larpVerdict = `Final Boss of RYM (${nicheScore}% Niche). Heavy rotation of ${mostObscure.artistName} proves you actively avoid anything with mainstream radio play.`;
+        tags.push("#UndergroundPurist");
+    } else if (nicheScore >= 52) {
+        if (hasContrast) {
+            // اگر هم آرتیست زیرزمینی داره هم آرتیست خیلی معروف مثل Daft Punk!
+            larpVerdict = `Dual-Personality Listener (${nicheScore}% Niche). You build serious underground cred with ${mostObscure.artistName}, then balance it out with classics like ${mostMainstream.artistName}.`;
+            tags.push("#BestOfBothWorlds");
+        } else {
+            larpVerdict = `Certified Music Nerd (${nicheScore}% Niche). Spinning ${mostObscure.artistName} keeps your taste way sharper than the average algorithm slave.`;
+            tags.push("#CuratedTaste");
+        }
+    } else if (nicheScore >= 32) {
+        if (hasContrast) {
+            larpVerdict = `Part-Time Indie, Full-Time Vibing (${nicheScore}% Niche). You dip your toes into ${mostObscure.artistName}, but ${mostMainstream.artistName} proves you still love iconic hits.`;
+            tags.push("#SafeAuxCord");
+        } else {
+            larpVerdict = `Solid & Accessible (${nicheScore}% Niche). Heavy on ${mostMainstream.artistName}—good music without trying too hard to look obscure.`;
+            tags.push("#NoFakeLarp");
+        }
+    } else {
+        larpVerdict = `Zero Larp Detected (${nicheScore}% Niche). Unapologetically blasting ${mostMainstream.artistName}. You care about bangers, not underground clout!`;
+        tags.push("#BangersOnly");
+    }
+
+    // ۵. اضافه کردن ژانرهای واقعی به تگ‌ها (تمیز و بدون تکرار)
+    const rawGenres = artists.flatMap(a => a.genres || []);
+    const cleanGenreTags = [...new Set(rawGenres)]
+        .slice(0, 3)
+        .map(g => '#' + g.split(/[\s-]+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(''));
+
+    cleanGenreTags.forEach(gt => {
+        if (tags.length < 6 && !tags.includes(gt)) tags.push(gt);
+    });
+
+    // ۶. آماده‌سازی ۵ آهنگ آخر برای نمایش
     const last5Tracks = sourceTracks.slice(0, 5).map(t => ({
         name: t.name || "Unknown Track",
         artist: (t.artists && t.artists.length > 0) ? t.artists.map(a => a.name).join(', ') : "Unknown Artist",
         cover: (t.album && t.album.images && t.album.images.length > 0) ? t.album.images[0].url : ""
     }));
-
-    const sampleArtist = last5Tracks.length > 0 
-        ? last5Tracks[0].artist.split(',')[0] 
-        : (artists.length > 0 && artists[0].name ? artists[0].name : "your top artists");
-
-    // --- د) درجه بندی ۵ سطحی و شوخ‌طبعانه برای Larp Verdict ---
-    let larpVerdict = "";
-
-    if (nicheScore >= 82) {
-        larpVerdict = `Final Boss of RYM (${nicheScore}% Niche). Listening to ${sampleArtist} like you're allergic to anyone with over 10k monthly listeners. Maximum underground larp.`;
-        tags.push("#RYMWarrior");
-    } else if (nicheScore >= 65) {
-        larpVerdict = `Supreme Music Gatekeeper (${nicheScore}% Niche). Spinning ${sampleArtist} and silently judging everyone else's Spotify Wrapped.`;
-        tags.push("#GatekeeperCertified");
-    } else if (nicheScore >= 48) {
-        larpVerdict = `Certified Indie Snob (${nicheScore}% Niche). Good balance—playing ${sampleArtist} proves you want people to think you're mysterious and deep.`;
-        tags.push("#IndieCred");
-    } else if (nicheScore >= 28) {
-        larpVerdict = `Respectable Casual (${nicheScore}% Niche). You've got real flavor with ${sampleArtist}, but you won't scare anyone away if they hand you the aux cord.`;
-        tags.push("#SafeAuxCord");
-    } else {
-        larpVerdict = `Zero Larp Detected (${nicheScore}% Niche). Pure chart-toppers and ${sampleArtist}. At least you're honest and don't fake liking obscure noise!`;
-        tags.push("#MainstreamEnjoyer");
-    }
-
-    // اضافه کردن حداکثر ۲ ژانر واقعی خود کاربر به تگ‌های پایین کارت
-    const uniqueUserGenres = [...new Set(rawGenresList)].slice(0, 2);
-    uniqueUserGenres.forEach(g => {
-        // تبدیل مثلا "post-punk" به "#PostPunk"
-        const formattedTag = '#' + g.split(/[\s-]+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('');
-        if (!tags.includes(formattedTag)) {
-            tags.push(formattedTag);
-        }
-    });
 
     return { moodTitle, moodDesc, nicheScore, larpVerdict, tags, last5Tracks };
 }
